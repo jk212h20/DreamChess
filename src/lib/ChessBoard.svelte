@@ -35,32 +35,44 @@
   ));
   const legalMoveSet = $derived(new Set(legalMoves.map(([r, c]) => `${r},${c}`)));
 
+  // When a traitor is selected, highlight the king as the sacrifice trigger
+  const traitorSelected = $derived(
+    isMyTurn && selectedSquare && traitorSet.has(`${selectedSquare[0]},${selectedSquare[1]}`)
+  );
+
   function handleSquareClick(r: number, c: number) {
     if (!gameState || gameState.status !== 'playing') return;
     if (!isPlayer || !('player' in gameState)) return;
 
     const ps = gameState as PublicGameState;
-
-    // If sacrifice is in progress, clicking an opponent piece completes it
-    if (sacrificeActive && removableSet.has(`${r},${c}`)) {
-      emit('completeSacrifice', { player: ps.player, removedR: r, removedC: c });
-      selectedSquare = null;
-      legalMoves = [];
-      return;
-    }
-
-    // If sacrifice is in progress, clicking elsewhere cancels
-    if (sacrificeActive) {
-      emit('cancelSacrifice', { player: ps.player });
-      selectedSquare = null;
-      legalMoves = [];
-      return;
-    }
-
-    const cell = ps.board[r][c];
     const color = ps.player === 'white' ? 'w' : 'b';
+    const cell = ps.board[r][c];
 
-    // If we have a selected piece and clicked a legal move target
+    // --- SACRIFICE ACTIVE: click enemy piece to remove it ---
+    if (sacrificeActive) {
+      if (removableSet.has(`${r},${c}`)) {
+        emit('completeSacrifice', { player: ps.player, removedR: r, removedC: c });
+        selectedSquare = null;
+        legalMoves = [];
+      }
+      // clicking anywhere else during active sacrifice does nothing (must pick enemy or cancel via button)
+      return;
+    }
+
+    // --- TRAITOR SELECTED + click own king = initiate sacrifice ---
+    if (
+      selectedSquare &&
+      traitorSet.has(`${selectedSquare[0]},${selectedSquare[1]}`) &&
+      cell === `${color}K`
+    ) {
+      const [traitorR, traitorC] = selectedSquare;
+      emit('initiateSacrifice', { player: ps.player, traitorR, traitorC });
+      selectedSquare = null;
+      legalMoves = [];
+      return;
+    }
+
+    // --- Selected piece + legal move target = normal move ---
     if (selectedSquare && legalMoveSet.has(`${r},${c}`)) {
       const [fromR, fromC] = selectedSquare;
 
@@ -80,16 +92,8 @@
       return;
     }
 
-    // Clicking own piece — select it
+    // --- Click own piece: select it ---
     if (cell && cell[0] === color && isMyTurn) {
-      // If already selected this traitor, initiate sacrifice on second click
-      if (traitorSet.has(`${r},${c}`) && selectedSquare?.[0] === r && selectedSquare?.[1] === c) {
-        emit('initiateSacrifice', { player: ps.player, traitorR: r, traitorC: c });
-        selectedSquare = null;
-        legalMoves = [];
-        return;
-      }
-
       selectedSquare = [r, c];
       legalMoves = getLegalNormalMoves(ps.board, ps.player, r, c, {
         board: ps.board,
@@ -106,7 +110,7 @@
       return;
     }
 
-    // Clicking empty or opponent piece with no selection
+    // --- Click empty or enemy with no valid action: deselect ---
     selectedSquare = null;
     legalMoves = [];
   }
@@ -149,7 +153,7 @@
         {/if}
       </span>
       {#if ps.isBehind && ps.canSacrificeNow && isMyTurn}
-        <span class="sacrifice-hint">💀 Sacrifice available!</span>
+        <span class="sacrifice-hint">💀 Select a glowing piece, then click your King to sacrifice!</span>
       {/if}
       {#if ps.inCheck}
         <span class="check-warning">⚡ CHECK!</span>
@@ -180,6 +184,7 @@
           {@const isSelected = selectedSquare?.[0] === r && selectedSquare?.[1] === c}
           {@const isLegal = legalMoveSet.has(`${r},${c}`)}
           {@const isTraitor = traitorSet.has(`${r},${c}`)}
+          {@const isKingTarget = traitorSelected && cell === `${player === 'white' ? 'w' : 'b'}K`}
           {@const isRemovable = sacrificeActive && removableSet.has(`${r},${c}`)}
           {@const isSacrificeSrc = sacrificeActive && gameState && 'sacrificeInProgress' in gameState && (gameState as PublicGameState).sacrificeInProgress?.traitorPos[0] === r && (gameState as PublicGameState).sacrificeInProgress?.traitorPos[1] === c}
           {@const sqName = `${file}${rank}`}
@@ -193,6 +198,7 @@
             class:selected={isSelected}
             class:legal-target={isLegal}
             class:traitor={isTraitor && isMyTurn && !sacrificeActive}
+            class:king-target={isKingTarget}
             class:removable={isRemovable}
             class:sacrifice-source={isSacrificeSrc}
             class:last-from={isLastFrom}
@@ -241,6 +247,8 @@
     {:else if sacrificeActive}
       <span class="sacrifice-mode">💀 Click an opponent piece to remove</span>
       <button class="cancel-btn" onclick={() => { emit('cancelSacrifice', { player: (gameState as PublicGameState).player }); selectedSquare = null; }}>Cancel</button>
+    {:else if traitorSelected}
+      <span class="sacrifice-mode">💀 Now click your King to sacrifice this piece!</span>
     {:else if isMyTurn}
       <span class="your-turn">Your turn</span>
     {:else if gameState}
@@ -380,6 +388,17 @@
     background: #ef444480 !important;
     box-shadow: inset 0 0 12px rgba(239, 68, 68, 0.6);
     cursor: crosshair;
+  }
+
+  .square.king-target {
+    background: #a855f780 !important;
+    box-shadow: inset 0 0 16px rgba(168, 85, 247, 0.8);
+    animation: king-pulse 1s infinite;
+  }
+
+  @keyframes king-pulse {
+    0%, 100% { box-shadow: inset 0 0 16px rgba(168, 85, 247, 0.8); }
+    50% { box-shadow: inset 0 0 24px rgba(168, 85, 247, 1); }
   }
 
   .square.sacrifice-source {
