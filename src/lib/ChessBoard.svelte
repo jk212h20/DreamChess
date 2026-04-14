@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Player, PublicGameState, SpectatorViewState } from '$lib/game';
-  import { getSocket } from '$lib/socket';
   import { CODE_TO_PIECE, FILES_ARR, RANKS_ARR } from '$lib/game';
   import { getLegalNormalMoves } from '$lib/game';
+  import { browser } from '$app/environment';
 
   let {
     state,
@@ -18,7 +18,12 @@
   let legalMoves: [number, number][] = $state([]);
   let promotionChoice: { fromR: number; fromC: number; toR: number; toC: number } | null = $state(null);
 
-  const socket = getSocket();
+  function emit(event: string, data?: any) {
+    if (!browser) return;
+    import('$lib/socket').then(({ getSocket }) => {
+      getSocket().emit(event, data);
+    });
+  }
 
   const isMyTurn = $derived(isPlayer && state && 'player' in state && state.turn === state.player);
   const sacrificeActive = $derived(isPlayer && state && 'sacrificeInProgress' in state && state.sacrificeInProgress?.player === player);
@@ -42,7 +47,7 @@
 
     // If sacrifice is in progress, clicking an opponent piece completes it
     if (sacrificeActive && removableSet.has(`${r},${c}`)) {
-      socket.emit('completeSacrifice', { player: ps.player, removedR: r, removedC: c });
+      emit('completeSacrifice', { player: ps.player, removedR: r, removedC: c });
       selectedSquare = null;
       legalMoves = [];
       return;
@@ -50,7 +55,7 @@
 
     // If sacrifice is in progress, clicking elsewhere cancels
     if (sacrificeActive) {
-      socket.emit('cancelSacrifice', { player: ps.player });
+      emit('cancelSacrifice', { player: ps.player });
       selectedSquare = null;
       legalMoves = [];
       return;
@@ -73,7 +78,7 @@
         }
       }
 
-      socket.emit('normalMove', { player: ps.player, fromR, fromC, toR: r, toC: c });
+      emit('normalMove', { player: ps.player, fromR, fromC, toR: r, toC: c });
       selectedSquare = null;
       legalMoves = [];
       return;
@@ -83,7 +88,7 @@
     if (cell && cell[0] === color && isMyTurn) {
       // If already selected this traitor, initiate sacrifice on second click
       if (traitorSet.has(`${r},${c}`) && selectedSquare?.[0] === r && selectedSquare?.[1] === c) {
-        socket.emit('initiateSacrifice', { player: ps.player, traitorR: r, traitorC: c });
+        emit('initiateSacrifice', { player: ps.player, traitorR: r, traitorC: c });
         selectedSquare = null;
         legalMoves = [];
         return;
@@ -112,7 +117,7 @@
 
   function handlePromotion(piece: 'Q' | 'R' | 'B' | 'N') {
     if (!promotionChoice || !state || !('player' in state)) return;
-    socket.emit('normalMove', {
+    emit('normalMove', {
       player: (state as PublicGameState).player,
       ...promotionChoice,
       promotion: piece
@@ -123,7 +128,7 @@
   }
 
   function handleNewGame() {
-    socket.emit('newGame');
+    emit('newGame');
   }
 
   function isLightSquare(r: number, c: number): boolean {
@@ -239,7 +244,7 @@
       <span class="waiting">Waiting for opponent...</span>
     {:else if sacrificeActive}
       <span class="sacrifice-mode">💀 Click an opponent piece to remove</span>
-      <button class="cancel-btn" onclick={() => { socket.emit('cancelSacrifice', { player: (state as PublicGameState).player }); selectedSquare = null; }}>Cancel</button>
+      <button class="cancel-btn" onclick={() => { emit('cancelSacrifice', { player: (state as PublicGameState).player }); selectedSquare = null; }}>Cancel</button>
     {:else if isMyTurn}
       <span class="your-turn">Your turn</span>
     {:else if state}

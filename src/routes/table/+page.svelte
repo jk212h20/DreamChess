@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSocket } from '$lib/socket';
   import ChessBoard from '$lib/ChessBoard.svelte';
   import type { SpectatorViewState } from '$lib/game';
 
   let state: SpectatorViewState | null = $state(null);
 
-  onMount(() => {
+  onMount(async () => {
+    const { getSocket } = await import('$lib/socket');
     const socket = getSocket();
     socket.emit('join', 'spectator');
 
