@@ -4,11 +4,11 @@
   import { getLegalNormalMoves } from '$lib/game';
 
   let {
-    state,
+    gameState,
     player = 'white' as Player,
     isPlayer = true,
   }: {
-    state: PublicGameState | SpectatorViewState | null;
+    gameState: PublicGameState | SpectatorViewState | null;
     player?: Player;
     isPlayer?: boolean;
   } = $props();
@@ -21,25 +21,25 @@
     import('$lib/socket').then(({ getSocket }) => getSocket().emit(event, data));
   }
 
-  const isMyTurn = $derived(isPlayer && state && 'player' in state && state.turn === state.player);
-  const sacrificeActive = $derived(isPlayer && state && 'sacrificeInProgress' in state && state.sacrificeInProgress?.player === player);
+  const isMyTurn = $derived(isPlayer && gameState && 'player' in gameState && gameState.turn === gameState.player);
+  const sacrificeActive = $derived(isPlayer && gameState && 'sacrificeInProgress' in gameState && gameState.sacrificeInProgress?.player === player);
   const traitorSet = $derived(new Set(
-    isPlayer && state && 'traitorPieces' in state
-      ? (state.traitorPieces || []).map(([r, c]: [number, number]) => `${r},${c}`)
+    isPlayer && gameState && 'traitorPieces' in gameState
+      ? (gameState.traitorPieces || []).map(([r, c]: [number, number]) => `${r},${c}`)
       : []
   ));
   const removableSet = $derived(new Set(
-    isPlayer && state && 'removablePieces' in state
-      ? (state.removablePieces || []).map(([r, c]: [number, number]) => `${r},${c}`)
+    isPlayer && gameState && 'removablePieces' in gameState
+      ? (gameState.removablePieces || []).map(([r, c]: [number, number]) => `${r},${c}`)
       : []
   ));
   const legalMoveSet = $derived(new Set(legalMoves.map(([r, c]) => `${r},${c}`)));
 
   function handleSquareClick(r: number, c: number) {
-    if (!state || state.status !== 'playing') return;
-    if (!isPlayer || !('player' in state)) return;
+    if (!gameState || gameState.status !== 'playing') return;
+    if (!isPlayer || !('player' in gameState)) return;
 
-    const ps = state as PublicGameState;
+    const ps = gameState as PublicGameState;
 
     // If sacrifice is in progress, clicking an opponent piece completes it
     if (sacrificeActive && removableSet.has(`${r},${c}`)) {
@@ -112,9 +112,9 @@
   }
 
   function handlePromotion(piece: 'Q' | 'R' | 'B' | 'N') {
-    if (!promotionChoice || !state || !('player' in state)) return;
+    if (!promotionChoice || !gameState || !('player' in gameState)) return;
     emit('normalMove', {
-      player: (state as PublicGameState).player,
+      player: (gameState as PublicGameState).player,
       ...promotionChoice,
       promotion: piece
     });
@@ -131,14 +131,14 @@
     return (r + c) % 2 === 0;
   }
 
-  const lastMove = $derived(state?.moveLog.length ? state.moveLog[state.moveLog.length - 1] : null);
+  const lastMove = $derived(gameState?.moveLog.length ? gameState.moveLog[gameState.moveLog.length - 1] : null);
 </script>
 
 <div class="game-container">
   <!-- Material bar -->
   <div class="material-bar">
-    {#if state && 'myMaterial' in state}
-      {@const ps = state as PublicGameState}
+    {#if gameState && 'myMaterial' in gameState}
+      {@const ps = gameState as PublicGameState}
       <span class="material-label" class:behind={ps.isBehind} class:ahead={!ps.isBehind && ps.myMaterial > ps.opponentMaterial}>
         {#if ps.myMaterial > ps.opponentMaterial}
           You +{ps.myMaterial - ps.opponentMaterial}
@@ -154,8 +154,8 @@
       {#if ps.inCheck}
         <span class="check-warning">⚡ CHECK!</span>
       {/if}
-    {:else if state}
-      {@const ss = state as SpectatorViewState}
+    {:else if gameState}
+      {@const ss = gameState as SpectatorViewState}
       <span class="material-label">
         {#if ss.whiteMaterial > ss.blackMaterial}
           White +{ss.whiteMaterial - ss.blackMaterial}
@@ -175,13 +175,13 @@
         {#each FILES_ARR as file, fi}
           {@const r = ri}
           {@const c = fi}
-          {@const cell = state?.board[r][c]}
+          {@const cell = gameState?.board[r][c]}
           {@const isLight = isLightSquare(r, c)}
           {@const isSelected = selectedSquare?.[0] === r && selectedSquare?.[1] === c}
           {@const isLegal = legalMoveSet.has(`${r},${c}`)}
           {@const isTraitor = traitorSet.has(`${r},${c}`)}
           {@const isRemovable = sacrificeActive && removableSet.has(`${r},${c}`)}
-          {@const isSacrificeSrc = sacrificeActive && state && 'sacrificeInProgress' in state && (state as PublicGameState).sacrificeInProgress?.traitorPos[0] === r && (state as PublicGameState).sacrificeInProgress?.traitorPos[1] === c}
+          {@const isSacrificeSrc = sacrificeActive && gameState && 'sacrificeInProgress' in gameState && (gameState as PublicGameState).sacrificeInProgress?.traitorPos[0] === r && (gameState as PublicGameState).sacrificeInProgress?.traitorPos[1] === c}
           {@const sqName = `${file}${rank}`}
           {@const isLastFrom = lastMove?.from === sqName}
           {@const isLastTo = lastMove?.to === sqName}
@@ -229,28 +229,28 @@
 
   <!-- Status -->
   <div class="status-bar">
-    {#if state?.status === 'finished'}
+    {#if gameState?.status === 'finished'}
       <div class="game-over">
         <span class="winner">
-          {#if state.winner === 'white'}♔ White wins!{:else if state.winner === 'black'}♚ Black wins!{:else}Draw!{/if}
+          {#if gameState.winner === 'white'}♔ White wins!{:else if gameState.winner === 'black'}♚ Black wins!{:else}Draw!{/if}
         </span>
         <button class="new-game-btn" onclick={handleNewGame}>New Game</button>
       </div>
-    {:else if state?.status === 'waiting'}
+    {:else if gameState?.status === 'waiting'}
       <span class="waiting">Waiting for opponent...</span>
     {:else if sacrificeActive}
       <span class="sacrifice-mode">💀 Click an opponent piece to remove</span>
-      <button class="cancel-btn" onclick={() => { emit('cancelSacrifice', { player: (state as PublicGameState).player }); selectedSquare = null; }}>Cancel</button>
+      <button class="cancel-btn" onclick={() => { emit('cancelSacrifice', { player: (gameState as PublicGameState).player }); selectedSquare = null; }}>Cancel</button>
     {:else if isMyTurn}
       <span class="your-turn">Your turn</span>
-    {:else if state}
+    {:else if gameState}
       <span class="opponent-turn">Opponent's turn</span>
     {/if}
   </div>
 
   <!-- Promotion dialog -->
-  {#if promotionChoice && state && 'player' in state}
-    {@const color = (state as PublicGameState).player === 'white' ? 'w' : 'b'}
+  {#if promotionChoice && gameState && 'player' in gameState}
+    {@const color = (gameState as PublicGameState).player === 'white' ? 'w' : 'b'}
     <div class="promotion-overlay" role="dialog">
       <div class="promotion-dialog">
         <p>Promote pawn to:</p>
@@ -266,9 +266,9 @@
   {/if}
 
   <!-- Move log -->
-  {#if state && state.moveLog.length > 0}
+  {#if gameState && gameState.moveLog.length > 0}
     <div class="move-log">
-      {#each state.moveLog as move}
+      {#each gameState.moveLog as move}
         <span class="move-entry" class:sacrifice={move.type === 'sacrifice'}>
           {move.description}
         </span>

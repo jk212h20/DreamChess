@@ -3,7 +3,7 @@
   import ChessBoard from '$lib/ChessBoard.svelte';
   import type { SpectatorViewState } from '$lib/game';
 
-  let state: SpectatorViewState | null = $state(null);
+  let gameState: SpectatorViewState | null = $state(null);
 
   onMount(() => {
     import('$lib/socket').then(({ getSocket }) => {
@@ -11,7 +11,7 @@
       socket.emit('join', 'spectator');
 
       socket.on('spectatorState', (s: SpectatorViewState) => {
-        state = s;
+        gameState = s;
       });
     });
   });
@@ -24,7 +24,7 @@
 <div class="player-page">
   <a href="/" class="back-link">← Back</a>
   <h1 class="player-title">👁 Spectating</h1>
-  <ChessBoard {state} player="white" isPlayer={false} />
+  <ChessBoard {gameState} player="white" isPlayer={false} />
 </div>
 
 <style>

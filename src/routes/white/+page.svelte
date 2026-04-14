@@ -3,16 +3,15 @@
   import ChessBoard from '$lib/ChessBoard.svelte';
   import type { PublicGameState } from '$lib/game';
 
-  let state: PublicGameState | null = $state(null);
+  let gameState: PublicGameState | null = $state(null);
 
   onMount(() => {
-    // getSocket only runs on client — socket.io-client needs window
     import('$lib/socket').then(({ getSocket }) => {
       const socket = getSocket();
       socket.emit('join', 'white');
 
       socket.on('playerState', (s: PublicGameState) => {
-        if (s.player === 'white') state = s;
+        if (s.player === 'white') gameState = s;
       });
     });
   });
@@ -25,7 +24,7 @@
 <div class="player-page">
   <a href="/" class="back-link">← Back</a>
   <h1 class="player-title white-title">♔ White</h1>
-  <ChessBoard {state} player="white" isPlayer={true} />
+  <ChessBoard {gameState} player="white" isPlayer={true} />
 </div>
 
 <style>
