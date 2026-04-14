@@ -5,23 +5,15 @@
 
   let state: PublicGameState | null = $state(null);
 
-  onMount(async () => {
-    const { getSocket } = await import('$lib/socket');
-    const socket = getSocket();
-    socket.emit('join', 'black');
+  onMount(() => {
+    import('$lib/socket').then(({ getSocket }) => {
+      const socket = getSocket();
+      socket.emit('join', 'black');
 
-    socket.on('playerState', (s: PublicGameState) => {
-      if (s.player === 'black') state = s;
+      socket.on('playerState', (s: PublicGameState) => {
+        if (s.player === 'black') state = s;
+      });
     });
-
-    socket.on('error', (err: string) => {
-      console.error('[DreamChess]', err);
-    });
-
-    return () => {
-      socket.off('playerState');
-      socket.off('error');
-    };
   });
 </script>
 

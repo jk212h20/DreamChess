@@ -5,23 +5,16 @@
 
   let state: PublicGameState | null = $state(null);
 
-  onMount(async () => {
-    const { getSocket } = await import('$lib/socket');
-    const socket = getSocket();
-    socket.emit('join', 'white');
+  onMount(() => {
+    // getSocket only runs on client — socket.io-client needs window
+    import('$lib/socket').then(({ getSocket }) => {
+      const socket = getSocket();
+      socket.emit('join', 'white');
 
-    socket.on('playerState', (s: PublicGameState) => {
-      if (s.player === 'white') state = s;
+      socket.on('playerState', (s: PublicGameState) => {
+        if (s.player === 'white') state = s;
+      });
     });
-
-    socket.on('error', (err: string) => {
-      console.error('[DreamChess]', err);
-    });
-
-    return () => {
-      socket.off('playerState');
-      socket.off('error');
-    };
   });
 </script>
 

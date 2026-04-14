@@ -2,7 +2,6 @@
   import type { Player, PublicGameState, SpectatorViewState } from '$lib/game';
   import { CODE_TO_PIECE, FILES_ARR, RANKS_ARR } from '$lib/game';
   import { getLegalNormalMoves } from '$lib/game';
-  import { getSocket } from '$lib/socket';
 
   let {
     state,
@@ -19,7 +18,7 @@
   let promotionChoice: { fromR: number; fromC: number; toR: number; toC: number } | null = $state(null);
 
   function emit(event: string, data?: any) {
-    getSocket().emit(event, data);
+    import('$lib/socket').then(({ getSocket }) => getSocket().emit(event, data));
   }
 
   const isMyTurn = $derived(isPlayer && state && 'player' in state && state.turn === state.player);

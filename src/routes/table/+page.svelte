@@ -5,18 +5,15 @@
 
   let state: SpectatorViewState | null = $state(null);
 
-  onMount(async () => {
-    const { getSocket } = await import('$lib/socket');
-    const socket = getSocket();
-    socket.emit('join', 'spectator');
+  onMount(() => {
+    import('$lib/socket').then(({ getSocket }) => {
+      const socket = getSocket();
+      socket.emit('join', 'spectator');
 
-    socket.on('spectatorState', (s: SpectatorViewState) => {
-      state = s;
+      socket.on('spectatorState', (s: SpectatorViewState) => {
+        state = s;
+      });
     });
-
-    return () => {
-      socket.off('spectatorState');
-    };
   });
 </script>
 
