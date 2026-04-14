@@ -1,11 +1,93 @@
-// DreamChess — Production server with Socket.io
+// DreamChess — Production server with Socket.io + SQLite persistence
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { handler } from './build/handler.js';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import initSqlJs from 'sql.js';
 
 const PORT = parseInt(process.env.PORT || '3000');
 
-// Inline game logic for production (avoid importing from build chunks)
+// --- SQLite Setup ---
+const DATA_DIR = process.env.DATABASE_PATH
+  ? join(process.env.DATABASE_PATH, '..')
+  : (existsSync('/app/data') ? '/app/data' : './data');
+const DB_PATH = process.env.DATABASE_PATH || join(DATA_DIR, 'dreamchess.db');
+
+mkdirSync(DATA_DIR, { recursive: true });
+
+let SQL, db;
+
+async function initDb() {
+  SQL = await initSqlJs();
+  if (existsSync(DB_PATH)) {
+    const data = readFileSync(DB_PATH);
+    db = new SQL.Database(data);
+    console.log(`[DreamChess] Loaded existing DB from ${DB_PATH}`);
+  } else {
+    db = new SQL.Database();
+    console.log(`[DreamChess] Created new DB at ${DB_PATH}`);
+  }
+  db.run(`CREATE TABLE IF NOT EXISTS games (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    winner TEXT,
+    move_count INTEGER,
+    moves_json TEXT,
+    final_board TEXT
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS game_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+  saveDb();
+}
+
+function saveDb() {
+  const data = db.export();
+  writeFileSync(DB_PATH, Buffer.from(data));
+}
+
+function saveGameState(gs) {
+  const now = new Date().toISOString();
+  const json = JSON.stringify(gs);
+  const exists = db.exec('SELECT id FROM game_state WHERE id = 1');
+  if (exists.length && exists[0].values.length) {
+    db.run('UPDATE game_state SET state_json = ?, updated_at = ? WHERE id = 1', [json, now]);
+  } else {
+    db.run('INSERT INTO game_state (id, state_json, updated_at) VALUES (1, ?, ?)', [json, now]);
+  }
+  saveDb();
+}
+
+function loadSavedGameState() {
+  try {
+    const res = db.exec('SELECT state_json FROM game_state WHERE id = 1');
+    if (res.length && res[0].values.length) {
+      const gs = JSON.parse(res[0].values[0][0]);
+      console.log('[DreamChess] Resumed game state from DB');
+      return gs;
+    }
+  } catch (e) {
+    console.error('[DreamChess] Failed to load game state:', e.message);
+  }
+  return null;
+}
+
+function recordCompletedGame(gs) {
+  if (!gs.gameStartedAt) return;
+  const now = new Date().toISOString();
+  db.run(
+    'INSERT INTO games (started_at, finished_at, winner, move_count, moves_json, final_board) VALUES (?, ?, ?, ?, ?, ?)',
+    [gs.gameStartedAt, now, gs.winner || null, gs.moveLog.length, JSON.stringify(gs.moveLog), JSON.stringify(gs.board)]
+  );
+  saveDb();
+  console.log(`[DreamChess] Game recorded: ${gs.winner || 'draw'} after ${gs.moveLog.length} moves`);
+}
+
+// Inline game logic
 const PIECE_VALUES = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 };
 const CODE_TO_PIECE = { K: 'King', Q: 'Queen', R: 'Rook', B: 'Bishop', N: 'Knight', P: 'Pawn' };
 const FILES_ARR = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
@@ -93,8 +175,7 @@ function getMaterial(board, player) {
 }
 
 function isBehind(board, player) {
-  const opp=player==='white'?'black':'white';
-  return getMaterial(board,player)<getMaterial(board,opp);
+  return getMaterial(board,player) < getMaterial(board, player==='white'?'black':'white');
 }
 
 function getTraitors(board, player) {
@@ -124,7 +205,10 @@ function doesSacResolve(board, player, tr, tc, rr, rc) {
 function isCheckmate(gs, player) {
   if(!isInCheck(gs.board,player)) return false;
   const c=player==='white'?'w':'b';
-  for(let r=0;r<8;r++) for(let cc=0;cc<8;cc++) { const cell=gs.board[r][cc]; if(cell&&cell[0]===c&&getLegalMoves(gs.board,player,r,cc,gs).length>0) return false; }
+  for(let r=0;r<8;r++) for(let cc=0;cc<8;cc++) {
+    const cell=gs.board[r][cc];
+    if(cell&&cell[0]===c&&getLegalMoves(gs.board,player,r,cc,gs).length>0) return false;
+  }
   if(isBehind(gs.board,player)) {
     const traitors=getTraitors(gs.board,player), rem=getRemovable(gs.board,player);
     for(const[tr,tc] of traitors) for(const[rr,rc] of rem) if(doesSacResolve(gs.board,player,tr,tc,rr,rc)) return false;
@@ -133,7 +217,19 @@ function isCheckmate(gs, player) {
 }
 
 function createGame() {
-  return { board:makeStartingBoard(), turn:'white', moveLog:[], status:'waiting', winner:null, whiteClaimed:false, blackClaimed:false, castling:{wK:true,wQ:true,bK:true,bQ:true}, enPassantTarget:null, sacrificeInProgress:null };
+  return {
+    board: makeStartingBoard(),
+    turn: 'white',
+    moveLog: [],
+    status: 'waiting',
+    winner: null,
+    whiteClaimed: false,
+    blackClaimed: false,
+    castling: { wK:true, wQ:true, bK:true, bQ:true },
+    enPassantTarget: null,
+    sacrificeInProgress: null,
+    gameStartedAt: null,
+  };
 }
 
 function getPlayerView(gs, player) {
@@ -141,23 +237,40 @@ function getPlayerView(gs, player) {
   const myMat=getMaterial(gs.board,player), oppMat=getMaterial(gs.board,opp);
   const behind=isBehind(gs.board,player), traitors=behind?getTraitors(gs.board,player):[];
   const canSac=!gs.sacrificeInProgress&&behind&&traitors.length>0;
-  return { board:gs.board, turn:gs.turn, player, moveLog:gs.moveLog, status:gs.status, winner:gs.winner, whiteClaimed:gs.whiteClaimed, blackClaimed:gs.blackClaimed, castling:{...gs.castling}, enPassantTarget:gs.enPassantTarget, sacrificeInProgress:gs.sacrificeInProgress, myMaterial:myMat, opponentMaterial:oppMat, isBehind:behind, traitorPieces:traitors, removablePieces:(canSac||gs.sacrificeInProgress?.player===player)?getRemovable(gs.board,player):[], inCheck:isInCheck(gs.board,player), canSacrificeNow:canSac };
+  return {
+    board: gs.board, turn: gs.turn, player, moveLog: gs.moveLog, status: gs.status,
+    winner: gs.winner, whiteClaimed: gs.whiteClaimed, blackClaimed: gs.blackClaimed,
+    castling: {...gs.castling}, enPassantTarget: gs.enPassantTarget,
+    sacrificeInProgress: gs.sacrificeInProgress, myMaterial: myMat, opponentMaterial: oppMat,
+    isBehind: behind, traitorPieces: traitors,
+    removablePieces: (canSac||gs.sacrificeInProgress?.player===player)?getRemovable(gs.board,player):[],
+    inCheck: isInCheck(gs.board,player), canSacrificeNow: canSac,
+  };
 }
 
 function getSpectatorView(gs) {
-  return { board:gs.board, turn:gs.turn, moveLog:gs.moveLog, status:gs.status, winner:gs.winner, whiteClaimed:gs.whiteClaimed, blackClaimed:gs.blackClaimed, whiteMaterial:getMaterial(gs.board,'white'), blackMaterial:getMaterial(gs.board,'black'), sacrificeInProgress:gs.sacrificeInProgress };
+  return {
+    board: gs.board, turn: gs.turn, moveLog: gs.moveLog, status: gs.status, winner: gs.winner,
+    whiteClaimed: gs.whiteClaimed, blackClaimed: gs.blackClaimed,
+    whiteMaterial: getMaterial(gs.board,'white'), blackMaterial: getMaterial(gs.board,'black'),
+    sacrificeInProgress: gs.sacrificeInProgress,
+  };
 }
 
 // --- Server Setup ---
-let gameState = createGame();
 const httpServer = createServer(handler);
 const io = new Server(httpServer, { cors: { origin: '*' }, path: '/socket.io' });
+
+let gameState = null;
 
 function broadcast() {
   io.to('white').emit('playerState', getPlayerView(gameState, 'white'));
   io.to('black').emit('playerState', getPlayerView(gameState, 'black'));
   io.to('spectator').emit('spectatorState', getSpectatorView(gameState));
 }
+
+await initDb();
+gameState = loadSavedGameState() || createGame();
 
 io.on('connection', (socket) => {
   console.log(`[DreamChess] Connected: ${socket.id}`);
@@ -166,55 +279,75 @@ io.on('connection', (socket) => {
     socket.join(role);
     if (role === 'white') gameState.whiteClaimed = true;
     if (role === 'black') gameState.blackClaimed = true;
-    if (gameState.whiteClaimed && gameState.blackClaimed && gameState.status === 'waiting') { gameState.status = 'playing'; }
+    if (gameState.whiteClaimed && gameState.blackClaimed && gameState.status === 'waiting') {
+      gameState.status = 'playing';
+      if (!gameState.gameStartedAt) gameState.gameStartedAt = new Date().toISOString();
+    }
+    saveGameState(gameState);
     broadcast();
   });
 
   socket.on('normalMove', (d) => {
     if (gameState.status !== 'playing' || gameState.turn !== d.player || gameState.sacrificeInProgress) return;
-    const c = d.player==='white'?'w':'b', cell = gameState.board[d.fromR][d.fromC];
+    const c = d.player==='white'?'w':'b';
+    const cell = gameState.board[d.fromR][d.fromC];
     if (!cell || cell[0] !== c) return;
     const legal = getLegalMoves(gameState.board, d.player, d.fromR, d.fromC, gameState);
     if (!legal.some(([r,cc]) => r===d.toR && cc===d.toC)) return;
-    
+
     let captured = gameState.board[d.toR][d.toC];
     gameState.board[d.toR][d.toC] = cell;
     gameState.board[d.fromR][d.fromC] = null;
-    
-    let epCapture = false;
+
     if (cell[1]==='P' && gameState.enPassantTarget && d.toR===gameState.enPassantTarget[0] && d.toC===gameState.enPassantTarget[1] && !captured) {
-      captured = gameState.board[d.fromR][d.toC]; gameState.board[d.fromR][d.toC] = null; epCapture = true;
+      captured = gameState.board[d.fromR][d.toC];
+      gameState.board[d.fromR][d.toC] = null;
     }
-    
+
     let castleDesc = '';
     if (cell[1]==='K' && Math.abs(d.toC-d.fromC)===2) {
       if (d.toC===6) { gameState.board[d.fromR][5]=gameState.board[d.fromR][7]; gameState.board[d.fromR][7]=null; castleDesc=' (O-O)'; }
       else if (d.toC===2) { gameState.board[d.fromR][3]=gameState.board[d.fromR][0]; gameState.board[d.fromR][0]=null; castleDesc=' (O-O-O)'; }
     }
-    
+
     let promoDesc = '';
     if (cell[1]==='P' && (d.toR===(c==='w'?0:7))) {
-      const pr = d.promotion || 'Q'; gameState.board[d.toR][d.toC] = `${c}${pr}`; promoDesc = `=${pr}`;
+      const pr = d.promotion || 'Q';
+      gameState.board[d.toR][d.toC] = `${c}${pr}`;
+      promoDesc = `=${pr}`;
     }
-    
+
     gameState.enPassantTarget = (cell[1]==='P' && Math.abs(d.toR-d.fromR)===2) ? [(d.fromR+d.toR)/2, d.fromC] : null;
-    
-    if (cell[1]==='K') { if (c==='w') { gameState.castling.wK=false; gameState.castling.wQ=false; } else { gameState.castling.bK=false; gameState.castling.bQ=false; } }
-    if (cell[1]==='R') { if(c==='w'&&d.fromR===7&&d.fromC===0) gameState.castling.wQ=false; if(c==='w'&&d.fromR===7&&d.fromC===7) gameState.castling.wK=false; if(c==='b'&&d.fromR===0&&d.fromC===0) gameState.castling.bQ=false; if(c==='b'&&d.fromR===0&&d.fromC===7) gameState.castling.bK=false; }
-    
+
+    if (cell[1]==='K') {
+      if (c==='w') { gameState.castling.wK=false; gameState.castling.wQ=false; }
+      else { gameState.castling.bK=false; gameState.castling.bQ=false; }
+    }
+    if (cell[1]==='R') {
+      if(c==='w'&&d.fromR===7&&d.fromC===0) gameState.castling.wQ=false;
+      if(c==='w'&&d.fromR===7&&d.fromC===7) gameState.castling.wK=false;
+      if(c==='b'&&d.fromR===0&&d.fromC===0) gameState.castling.bQ=false;
+      if(c==='b'&&d.fromR===0&&d.fromC===7) gameState.castling.bK=false;
+    }
+
     const opp = d.player==='white'?'black':'white';
     gameState.turn = opp;
-    
+
     const fromSq = indicesToSquare(d.fromR,d.fromC), toSq = indicesToSquare(d.toR,d.toC);
-    const pn = CODE_TO_PIECE[cell[1]];
-    let desc = `${pn} ${fromSq}→${toSq}${castleDesc}${promoDesc}`;
+    let desc = `${CODE_TO_PIECE[cell[1]]} ${fromSq}→${toSq}${castleDesc}${promoDesc}`;
     if (captured) desc += ` ✕ ${CODE_TO_PIECE[captured[1]]}`;
     if (isInCheck(gameState.board, opp)) desc += ' +CHECK';
-    
+
     const move = { player:d.player, type:'normal', description:desc, moveNumber:gameState.moveLog.length+1, from:fromSq, to:toSq };
     gameState.moveLog.push(move);
-    
-    if (isCheckmate(gameState, opp)) { gameState.status='finished'; gameState.winner=d.player; move.description=move.description.replace('CHECK','CHECKMATE'); }
+
+    if (isCheckmate(gameState, opp)) {
+      gameState.status = 'finished';
+      gameState.winner = d.player;
+      move.description = move.description.replace('CHECK','CHECKMATE');
+      recordCompletedGame(gameState);
+    }
+    saveGameState(gameState);
     broadcast();
   });
 
@@ -228,6 +361,7 @@ io.on('connection', (socket) => {
       if (!rem.some(([rr,rc])=>doesSacResolve(gameState.board,d.player,d.traitorR,d.traitorC,rr,rc))) return;
     }
     gameState.sacrificeInProgress = { player:d.player, traitorPos:[d.traitorR,d.traitorC] };
+    saveGameState(gameState);
     broadcast();
   });
 
@@ -239,25 +373,50 @@ io.on('connection', (socket) => {
     const [tr,tc] = gameState.sacrificeInProgress.traitorPos;
     if (isInCheck(gameState.board,d.player)&&!doesSacResolve(gameState.board,d.player,tr,tc,d.removedR,d.removedC)) return;
     const traitorCell = gameState.board[tr][tc];
-    gameState.board[tr][tc] = null; gameState.board[d.removedR][d.removedC] = null;
-    gameState.enPassantTarget = null; gameState.sacrificeInProgress = null;
+    gameState.board[tr][tc] = null;
+    gameState.board[d.removedR][d.removedC] = null;
+    gameState.enPassantTarget = null;
+    gameState.sacrificeInProgress = null;
     const opp = d.player==='white'?'black':'white';
     gameState.turn = opp;
-    const tn = traitorCell?CODE_TO_PIECE[traitorCell[1]]:'?', rn = CODE_TO_PIECE[cell[1]];
-    let desc = `💀 ${tn} sacrificed → removed ${rn} from ${indicesToSquare(d.removedR,d.removedC)}`;
+    let desc = `💀 ${traitorCell?CODE_TO_PIECE[traitorCell[1]]:'?'} sacrificed → removed ${CODE_TO_PIECE[cell[1]]} from ${indicesToSquare(d.removedR,d.removedC)}`;
     if (isInCheck(gameState.board,opp)) desc += ' +CHECK';
     const move = { player:d.player, type:'sacrifice', description:desc, moveNumber:gameState.moveLog.length+1 };
     gameState.moveLog.push(move);
-    if (isCheckmate(gameState,opp)) { gameState.status='finished'; gameState.winner=d.player; move.description=move.description.replace('CHECK','CHECKMATE'); }
+    if (isCheckmate(gameState,opp)) {
+      gameState.status = 'finished';
+      gameState.winner = d.player;
+      move.description = move.description.replace('CHECK','CHECKMATE');
+      recordCompletedGame(gameState);
+    }
+    saveGameState(gameState);
     broadcast();
   });
 
   socket.on('cancelSacrifice', (d) => {
-    if (gameState.sacrificeInProgress?.player===d.player) { gameState.sacrificeInProgress=null; broadcast(); }
+    if (gameState.sacrificeInProgress?.player===d.player) {
+      gameState.sacrificeInProgress = null;
+      saveGameState(gameState);
+      broadcast();
+    }
   });
 
-  socket.on('newGame', () => { gameState=createGame(); gameState.status='playing'; broadcast(); });
-  socket.on('disconnect', () => { console.log(`[DreamChess] Disconnected: ${socket.id}`); });
+  socket.on('newGame', () => {
+    if (gameState.status === 'finished') recordCompletedGame(gameState);
+    gameState = createGame();
+    gameState.status = 'playing';
+    gameState.whiteClaimed = true;
+    gameState.blackClaimed = true;
+    gameState.gameStartedAt = new Date().toISOString();
+    saveGameState(gameState);
+    broadcast();
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`[DreamChess] Disconnected: ${socket.id}`);
+  });
 });
 
-httpServer.listen(PORT, () => { console.log(`[DreamChess] Server running on port ${PORT}`); });
+httpServer.listen(PORT, () => {
+  console.log(`[DreamChess] Server running on port ${PORT}`);
+});
